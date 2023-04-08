@@ -1,10 +1,10 @@
-# SimpleChat
-A client/server application for a simple chat service. The first design project for CS 262 @ Harvard
+# Strength in Numbers
+A client/server application for a replicated chat service. The third design project for CS 262 @ Harvard
 
 ## How to Use
 
 ### Preparation + Launching Server / Client
-The user first clones this repository, then installs the required dependencies using `pip install -r requirements.txt`. Then, navigate to whichever part you want to run (part 1 is the socket implementation and part 2 is the gRPC implementation) launch run the server either in the background (`python server.py`) or in another terminal. Then run your client in another terminal using (`python client.py [server_ip]`). Note that after launching, the server will display the ip it is running on, which must be used as the argument for the script launching the client. 
+The user first clones this repository, then installs the required dependencies using `pip install -r requirements.txt`. Then run the server either in the background (`python server.py`) or in another terminal. Next run your client in another terminal using (`python client.py [server_ip]`). Note that after launching, the server will display the ip it is running on, which must be used as the argument for the script launching the client. 
 
 ### UI:
 After you launch the client, you will be shown a menu with seven options:
@@ -16,8 +16,4 @@ After you launch the client, you will be shown a menu with seven options:
 6. Send Message
 7. Logout + Exit
 
-The user then types a number specifying the option they want. After that, they specify the arguments. The client sends a message to the server, the server performs the requested action, and reports back the status of the request back to the client. The user can keep on specifying options as they please. Once the user is done, they can exit by typing 7
-
-## Running Tests
-
-You can test the client server interaction by navigating to either the `part1` or `part2` subdirectory and running `./launch_test.sh`. The script will launch a test will simulate launching a server and client and report whether it can perform the essential functions.
+The user then types a number specifying the option they want. After that, they specify the arguments. The client sends a message to the server, the server performs the requested action, and reports back the status of the request back to the client. The user can keep on specifying options as they please. Once the user is done, they can exit by typing 7.
