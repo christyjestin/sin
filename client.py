@@ -5,20 +5,37 @@ from server import SERVER_METHODS, SingleMessage, STREAM_CODE
 import types
 import selectors
 
-DEFAULT_SERVER_ADDR = "10.250.180.4"
-PORT = 50051
+SERVER_0_ADDR = "10.250.180.4"
+SERVER_1_ADDR = ""
+SERVER_2_ADDR = ""
+# different for local testing
+PORT_0 = 50051
+PORT_1 = 50051
+PORT_2 = 50051
 
-# selector for managing all sockets used by client
-sel = selectors.DefaultSelector()
 
 class Client:
-    def __init__(self, sock, server_addr=DEFAULT_SERVER_ADDR):
+    def __init__(self, p_0=PORT_0, p_1=PORT_1, p_2=PORT_2,
+                 server_addr_0=SERVER_0_ADDR, server_addr_1=SERVER_1_ADDR, 
+                 server_addr_2=SERVER_2_ADDR):
         self.username = ''
-        self.server_addr = server_addr
-        self.sock = sock
-        self.stop_listening = False # boolean to tell listener thread when user logs out
+        # server that starts off as leader, 0 by default
+        self.leader = 0
+        self.server_addresses = [server_addr_0, server_addr_1, server_addr_2]
+        self.ports = [p_0, p_1, p_2]
 
-    # this encodes a method call, sends it to the server, and finally decodes and returns the
+        self.sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(3)]
+        for i in range(3):
+            # connect and initiate stream
+            self.sockets[i].connect((self.server_addresses[i], self.ports[i]))
+
+        self.stop_listening = False  # boolean to tell listener threads when user logs out
+        self.all_dead = False
+        self.has_heartbeat = [False, False, False]
+        h = threading.Thread(target=self.HeartBeat)
+        h.start()
+
+    # this encodes a method call, sends it to the server, and finally decodes and returns
     # the server's response. Takes in a method name and the args to be passed to the method
     def run_service(self, method, args):
         assert method in SERVER_METHODS
@@ -27,8 +44,12 @@ class Client:
         # for the method in question
         method_code = SERVER_METHODS.index(method)
         transmission = str((method_code, args)).encode("utf-8")
-        self.sock.sendall(transmission)
-        data = self.sock.recv(1024)
+        data = None
+        while data is None:
+            if self.all_dead:
+                raise Exception('All Servers are Dead')
+            self.sockets[self.leader].sendall(transmission)
+            data = self.sockets[self.leader].recv(1024)
         return eval(data.decode("utf-8"))
 
     # Create an account with the given username.
@@ -64,33 +85,64 @@ class Client:
     def SendMessage(self, recipient, message):
         return self.run_service("SendMessage", (self.username, recipient, message))
 
+    def InitiateChatConnection(self, sock, server_addr):
+        sel = selectors.DefaultSelector()
+        # STREAM_CODE is a code for the ChatStream method call on the server
+        transmission = str((STREAM_CODE, (self.username,))).encode("utf-8")
+        sock.sendall(transmission)
+        # setup selector to listen for read events
+        data = types.SimpleNamespace(addr = server_addr, inb = b"", outb = b"")
+        events = selectors.EVENT_READ
+        sel.register(sock, events, data=data)
+        return sel
+
     # Listen for messages from the server.
     def ListenForMessages(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        # connect to all servers
+        sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(3)]
+        for i in range(3):
             # connect and initiate stream
-            s.connect((self.server_addr, PORT))
-            # STREAM_CODE is a code for the ChatStream method call on the server
-            transmission = str((STREAM_CODE, (self.username,))).encode("utf-8")
-            s.sendall(transmission)
-            # setup selector to listen for read events
-            data = types.SimpleNamespace(addr=self.server_addr, inb=b"", outb=b"")
-            events = selectors.EVENT_READ
-            sel.register(s, events, data=data)
+            sockets[i].connect((self.server_addresses[i], self.ports[i]))
+        leader = self.leader
+        sel = self.InitiateChatConnection(self.sockets[leader], self.server_addresses[leader])
+        # process events and print messages received
+        while not self.stop_listening and not self.all_dead:
+            # when heartbeat thread changes the leader, initiate a new chat connection
+            if leader != self.leader:
+                leader = self.leader
+                sel = self.InitiateChatConnection(self.sockets[leader], self.server_addresses[leader])
+            events = sel.select(timeout=None)
+            for key, mask in events:
+                # data is none when the event is a new connection
+                if key.data is None:
+                    raise Exception("Shouldn't be accepting connections to socket reserved for listening \
+                                    to messages")
+                data = self.sockets[self.leader].recv(1024)
+                if data is None:
+                    break
+                msg = eval(data.decode("utf-8"))
+                assert isinstance(msg, SingleMessage)
+                print("\n[" + msg.sender + "]: " + msg.message)
 
-            # process events and print messages received
-            while not self.stop_listening:
-                events = sel.select(timeout=None)
-                for key, mask in events:
-                    # data is none when the event is a new connection
-                    if key.data is None:
-                        raise Exception("Shouldn't be accepting connections to socket reserved for listening \
-                                        to messages")
-                    data = s.recv(1024)
-                    msg = eval(data.decode("utf-8"))
-                    assert type(msg) == SingleMessage
-                    print()
-                    print("[" + msg.sender + "]: " + msg.message)
-    
+    # run the heart beat thread
+    def HeartBeat(self):
+        # connect to all servers
+        sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(3)]
+        for i in range(3):
+            sockets[i].connect((self.server_addresses[i], self.ports[i]))
+            # TODO: ask for heartbeat - (send msg specifying this is heartbeat request)
+        while not self.all_dead:
+            for i in range(3):
+                data = sockets[i].recv(1)
+                self.has_heartbeat[i] = data is not None
+            if not self.has_heartbeat[self.leader]:
+                if not any(self.has_heartbeat):
+                    self.all_dead = True
+                else:
+                    i = (self.leader + 1) % 3
+                    j = (self.leader + 2) % 3
+                    self.leader = i if self.has_heartbeat[i] else j
+
     # Print the menu for the client.
     def printMenu(self):
         print('1. Create Account')
@@ -100,94 +152,89 @@ class Client:
         print('5. Login')
         print('6. Send Message')
         print('7. Exit / Logout')
-    
 
 # Run the client.
-def run(server_addr = DEFAULT_SERVER_ADDR):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((server_addr, PORT))
-        client = Client(s, server_addr)
+def run():
+    client = Client()
+    client.printMenu()
+    user_input = input("Enter option: ")
+    if user_input in ['1', '2', '3', '4', '5', '6', '7']:
+        rpc_call = int(user_input)
+    else:
+        rpc_call = 0
+
+    while rpc_call != 7:
+        # create account
+        if rpc_call == 1:
+            name = input("Enter username: ")
+            if client.CreateAccount(name):
+                print("Account created successfully")
+            else:
+                print("Account creation failed")
+
+        # list accounts
+        elif rpc_call == 2:
+            for account in client.ListAccounts():
+                print(account)
+
+        # list accounts by wildcard
+        elif rpc_call == 3:
+            wildcard = input("Enter wildcard: ")
+            for account in client.ListAccounts(wildcard):
+                print(account)
+
+        # delete account
+        elif rpc_call == 4:
+            if client.username == '':
+                print("You must be logged in to delete your account")
+            else:
+                if client.DeleteAccount():
+                    print("Account deleted successfully")
+                else:
+                    print("Account deletion failed")
+
+        # login
+        elif rpc_call == 5:
+            usr = input("Enter username: ")
+            if client.Login(usr):
+                print("Login successful")
+                # start a thread to listen for messages
+                t = threading.Thread(target=client.ListenForMessages)
+                t.start()
+            else:
+                print("Login failed. Username might not exist.")
+
+        # send message
+        elif rpc_call == 6:
+            if client.username == '':
+                print("You must be logged in to send messages")
+            else:
+                recipient = input("Enter recipient: ")
+                message = input("Enter message: ")
+                if client.SendMessage(recipient, message):
+                    print("Message sent successfully")
+                else:
+                    print("Message failed to send")
+
         client.printMenu()
         user_input = input("Enter option: ")
         if user_input in ['1', '2', '3', '4', '5', '6', '7']:
             rpc_call = int(user_input)
         else:
             rpc_call = 0
-        
-        while rpc_call != 7:
-            # create account
-            if rpc_call == 1:
-                name = input("Enter username: ")
-                if client.CreateAccount(name):
-                    print("Account created successfully")
-                else:
-                    print("Account creation failed")
-            
-            # list accounts
-            elif rpc_call == 2:
-                for account in client.ListAccounts():
-                    print(account)
 
-            # list accounts by wildcard
-            elif rpc_call == 3:
-                wildcard = input("Enter wildcard: ")
-                for account in client.ListAccounts(wildcard):
-                    print(account)
-            
-            # delete account
-            elif rpc_call == 4:
-                if client.username == '':
-                    print("You must be logged in to delete your account")
-                else:
-                    if client.DeleteAccount():
-                        print("Account deleted successfully")
-                    else:
-                        print("Account deletion failed")
-
-            # login
-            elif rpc_call == 5:
-                usr = input("Enter username: ")
-                if client.Login(usr):
-                    print("Login successful")
-                    # start a thread to listen for messages
-                    t = threading.Thread(target=client.ListenForMessages)
-                    t.start()
-                else:
-                    print("Login failed. Username might not exist.")
-
-            # send message
-            elif rpc_call == 6:
-                if client.username == '':
-                    print("You must be logged in to send messages")
-                else:
-                    recipient = input("Enter recipient: ")
-                    message = input("Enter message: ")
-                    if client.SendMessage(recipient, message):
-                        print("Message sent successfully")
-                    else:
-                        print("Message failed to send")
-            
-            client.printMenu()
-            user_input = input("Enter option: ")
-            if user_input in ['1', '2', '3', '4', '5', '6', '7']:
-                rpc_call = int(user_input)
-            else:
-                rpc_call = 0
-
-        # Logout if the user is logged in
-        if client.username != '':     
-            client.Logout()
-        # stop listening for messages
-        client.stop_listening = True
-        print('Exiting...')
-        sys.exit(0)
+    # Logout if the user is logged in
+    if client.username != '':
+        client.Logout()
+    # stop listening for messages
+    client.stop_listening = True
+    print('Exiting...')
+    sys.exit(0)
 
 
 # run the client
 if __name__ == '__main__':
     if len(sys.argv) == 1:
         run()
-    elif len(sys.argv) == 2:
-        run(server_addr = sys.argv[1])
     else:
-        print("Invalid number of arguments: there is a single optional argument for the server's IP address")
+        print("This program does not take command line arguments")
