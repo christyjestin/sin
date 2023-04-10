@@ -246,7 +246,9 @@ def run():
 
     # Logout if the user is logged in
     if client.username != '':
-        print(client.Logout())
+        if client.Logout():
+            print("Successful logout!")
+
     # stop listening for messages
     client.stop_listening = True
     print('Exiting...')
