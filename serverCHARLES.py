@@ -7,6 +7,7 @@ from threading import Lock, Thread
 from collections import defaultdict
 from common import *
 import os
+import json
 
 
 # Non GRPC implementation
@@ -43,18 +44,31 @@ class Server():
         self.chats = defaultdict(list)
         self.online = set()
         self.log_dir = "Server_" + str(self.id) + "_Logs"
+        self.users_log = self.log_dir + "/users.txt"
+        self.unsent_messages_log = self.log_dir + "/unsent_messages.json"
 
 
         ### CHARLES NEW CODE ###
         # check if this is an initial bootup or reboot from server failure
-        # do this by checking if folder + logs have been previously written
-        if os.path.exists(self.log_dir):
-            # TODO: call the function that gets server up to date using its log
-            pass
-        else:
-            # make the directory to store the logs
+        # do this by checking if folder + logs have been previously made
+        if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
-        ### CHARLES NEW CODE ###
+        else:
+            # check for existing users and load them
+            if os.path.exists(self.users_log):
+                # first get all the users
+                with open(self.users_log, "r") as file:
+                    users_list = []
+                    for line in file:
+                        users_list.append(line.rstrip("\n"))
+                    self.users = set(users_list)
+            
+            # check for existing unsent messages and load them
+            if os.path.exists(self.unsent_messages_log):
+                with open(self.unsent_messages_log, "r") as json_file:
+                    self.chats = defaultdict(list, json.load(json_file))
+        
+        ### END CHARLES NEW CODE ###
 
     # a wrapper function for binding and listening to sockets
     def listen_wrapper(self, sockets, ports):
@@ -122,11 +136,11 @@ class Server():
 
                 ### CHARLES NEW CODE ###
 
-                # log to USERS that a new user has been created
+                # log to USERS the new set of users
                 assert os.path.exists(self.log_dir), "stupid code dumb dumb no directory"
-                with open(self.log_dir + "/users.txt", "a") as file:
-                    file.write("C|" + user + "\n")
-                
+                with open(self.users_log, "w") as file:
+                    for el in list(self.users):
+                        print(el, file=file)
                 ### CHARLES END NEW CODE ###
 
         return success
@@ -147,8 +161,9 @@ class Server():
                 ### CHARLES NEW CODE ###
 
                 # log to USERS that we've deleted this user
-                with open(self.log_dir + "/users.txt", "a") as file:
-                    file.write("D|" + user + "\n")
+                with open(self.users_log, "w") as file:
+                    for el in list(self.users):
+                        print(el, file=file)
 
                 ### END CHARLES NEW CODE ###
         return success
@@ -190,10 +205,10 @@ class Server():
             message = SingleMessage(sender, message)
             with self.chat_locks[recipient]:
                 self.chats[recipient].append(message)
-
+            
             ### CHARLES NEW CODE
-            with open(self.log_dir + "/" + recipient + "_unsent_messages.txt", "a") as file:
-                print(message, file=file)
+            with open(self.unsent_messages_log, "w") as json_file:
+                json.dump(self.chats, json_file)
             ### END CHARLES NEW CODE
 
             return True
@@ -207,25 +222,16 @@ class Server():
             assert user in self.users, "user does not exist or no longer exists"
             # release so that the streams aren't constantly holding onto the lock
             self.users_lock.release()
-            line_nums = 0
             with self.chat_locks[user]:
                 if self.chats[user]:
                     print("sending message to " + user)
                     msg = self.chats[user].pop(0)
                     data_stream.outb += str(msg).encode("utf-8")
-                    line_nums += 1
-            
-            ### CHARLES NEW CODE
-            with open(self.log_dir + "/" + user + "_unsent_messages.txt", "r") as file:
-                lines = file.readlines()
 
-                with open(self.log_dir + "/" + user + "_unsent_messages.txt", "w") as file_w:
-                    ptr = 1
-                    for line in lines:
-                        if ptr > line_nums:
-                            file_w.write(line)
-                            ptr += 1
-            ### END CHARLES NEW CODE
+                    ### CHARLES NEW CODE
+                    with open(self.unsent_messages_log, "w") as json_file:
+                        json.dump(self.chats, json_file)
+                    ### END CHARLES NEW CODE
 
             # reacquire lock before checking while condition
             self.users_lock.acquire(blocking=True)
