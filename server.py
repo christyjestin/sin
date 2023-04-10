@@ -6,6 +6,7 @@ import re
 from threading import Lock, Thread
 from collections import defaultdict
 from common import *
+import json
 import os
 import time
 
@@ -43,6 +44,29 @@ class Server():
         self.chats = defaultdict(list)
         self.online = set()
         self.log_dir = "Server_" + str(self.id) + "_Logs"
+        self.users_log = self.log_dir + "/users.txt"
+        self.unsent_messages_log = self.log_dir + "/unsent_messages.json"
+
+        ### CHARLES NEW CODE ###
+        # check if this is an initial bootup or reboot from server failure
+        # do this by checking if folder + logs have been previously made
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir)
+        else:
+            # check for existing users and load them
+            if os.path.exists(self.users_log):
+                # first get all the users
+                with open(self.users_log, "r") as file:
+                    users_list = []
+                    for line in file:
+                        users_list.append(line.rstrip("\n"))
+                    self.users = set(users_list)
+
+            # check for existing unsent messages and load them
+            if os.path.exists(self.unsent_messages_log):
+                with open(self.unsent_messages_log, "r") as json_file:
+                    self.chats = defaultdict(list, json.load(json_file))
+
 
 
         ### CHARLES NEW CODE ###
@@ -142,8 +166,12 @@ class Server():
 
                 ### CHARLES NEW CODE ###
 
-                # log to USERS that a new user has been created
-                # assert os.path.exists(self.)
+                # log to USERS the new set of users
+                assert os.path.exists(
+                    self.log_dir), "stupid code dumb dumb no directory"
+                with open(self.users_log, "w") as file:
+                    for el in list(self.users):
+                        print(el, file=file)
                 ### CHARLES END NEW CODE ###
         return success
 
@@ -159,6 +187,16 @@ class Server():
                     if user in self.chats:
                         del self.chats[user] # delete undelivered chats if you are deleting the account
                 del self.chat_locks[user]
+
+                ### CHARLES NEW CODE ###
+
+                # log to USERS that we've deleted this user
+                with open(self.users_log, "w") as file:
+                    for el in list(self.users):
+                        print(el, file=file)
+
+                ### END CHARLES NEW CODE ###
+
         return success
     
     # report failure if account doesn't exist and return list of accounts that match wildcard otherwise
@@ -198,7 +236,15 @@ class Server():
             message = SingleMessage(sender, message)
             with self.chat_locks[recipient]:
                 self.chats[recipient].append(message)
+        
+            # CHARLES NEW CODE
+            with open(self.unsent_messages_log, "w") as json_file:
+                json.dump(self.chats, json_file)
+            # END CHARLES NEW CODE
+
             return True
+
+
 
     # report failure if account doesn't exist and start chat stream otherwise
     def ChatStream(self, user, data_stream):
@@ -214,6 +260,12 @@ class Server():
                     print("sending message to " + user)
                     msg = self.chats[user].pop(0)
                     data_stream.outb += str(msg).encode("utf-8")
+
+                    # CHARLES NEW CODE
+                    with open(self.unsent_messages_log, "w") as json_file:
+                        json.dump(self.chats, json_file)
+                    # END CHARLES NEW CODE
+
             # reacquire lock before checking while condition
             self.users_lock.acquire(blocking=True)
         # release lock before stopping stream
