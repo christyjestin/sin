@@ -29,11 +29,10 @@ class Server():
         elif self.id == 1:
             self.listen_wrapper([self.server_facing_sockets[0], self.client_facing_socket], 
                                 [self.server_connection_ports[2], self.ports[self.id]])
-            self.connect_wrapper(self.server_facing_sockets[1], self.addresses[0], self.server_connection_ports[0])
+            self.connect_wrapper(self.server_facing_sockets[1:2], self.addresses[0:1], self.server_connection_ports[0:1])
         elif self.id == 2:
             self.listen_wrapper([self.client_facing_socket], [self.ports[self.id]])
-            self.connect_wrapper(self.server_facing_sockets[0], self.addresses[0], self.server_connection_ports[1])
-            self.connect_wrapper(self.server_facing_sockets[1], self.addresses[1], self.server_connection_ports[2])
+            self.connect_wrapper(self.server_facing_sockets, self.addresses[:2], self.server_connection_ports[1:])
         else:
             raise ValueError(f"Invalid Id: {self.id}")
 
@@ -56,12 +55,13 @@ class Server():
             os.makedirs(self.log_dir)
         ### CHARLES NEW CODE ###
 
-    # a wrapper function for connecting
-    def connect_wrapper(self, socket, addr, port):
-        socket.connect((addr, port))
-        data = types.SimpleNamespace(addr=(addr, port), inb=b"", outb=b"")
-        events = selectors.EVENT_READ | selectors.EVENT_WRITE
-        self.sel.register(socket, events, data=data)
+    # a wrapper function for connecting a socket
+    def connect_wrapper(self, sockets, addrs, ports):
+        for socket, addr, port in zip(sockets, addrs, ports):
+            socket.connect((addr, port))
+            data = types.SimpleNamespace(addr=(addr, port), inb=b"", outb=b"")
+            events = selectors.EVENT_READ | selectors.EVENT_WRITE
+            self.sel.register(socket, events, data=data)
 
     # a wrapper function for binding and listening to sockets
     def listen_wrapper(self, sockets, ports):

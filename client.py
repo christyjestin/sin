@@ -116,6 +116,7 @@ class Client:
                 if data is None:
                     break
                 msg = eval(data.decode("utf-8"))
+                print(msg)
                 assert isinstance(msg, SingleMessage)
                 print("\n[" + msg.sender + "]: " + msg.message)
 
@@ -225,7 +226,7 @@ def run():
     # stop listening for messages
     client.stop_listening = True
     print('Exiting...')
-    sys.exit(0)
+    sys.exit()
 
 
 # run the client
