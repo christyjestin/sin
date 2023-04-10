@@ -1,23 +1,16 @@
 import socket
 import threading
 import sys
-from server import SERVER_METHODS, SingleMessage, STREAM_CODE
 import types
 import selectors
+from common import *
 
-SERVER_0_ADDR = "10.250.180.4"
-SERVER_1_ADDR = ""
-SERVER_2_ADDR = ""
-# different for local testing
-PORT_0 = 50051
-PORT_1 = 50051
-PORT_2 = 50051
-
+is_client = True
 
 class Client:
     def __init__(self, p_0=PORT_0, p_1=PORT_1, p_2=PORT_2,
-                 server_addr_0=SERVER_0_ADDR, server_addr_1=SERVER_1_ADDR, 
-                 server_addr_2=SERVER_2_ADDR):
+                 server_addr_0=SERVER_ADDR_0, server_addr_1=SERVER_ADDR_1, 
+                 server_addr_2=SERVER_ADDR_2):
         self.username = ''
         # server that starts off as leader, 0 by default
         self.leader = 0
@@ -43,7 +36,7 @@ class Client:
         # grabbing the index of a method from this list gives a unique integer code
         # for the method in question
         method_code = SERVER_METHODS.index(method)
-        transmission = str((method_code, args)).encode("utf-8")
+        transmission = str((is_client, method_code, args)).encode("utf-8")
         data = None
         while data is None:
             if self.all_dead:
@@ -88,7 +81,7 @@ class Client:
     def InitiateChatConnection(self, sock, server_addr):
         sel = selectors.DefaultSelector()
         # STREAM_CODE is a code for the ChatStream method call on the server
-        transmission = str((STREAM_CODE, (self.username,))).encode("utf-8")
+        transmission = str((is_client, STREAM_CODE, (self.username,))).encode("utf-8")
         sock.sendall(transmission)
         # setup selector to listen for read events
         data = types.SimpleNamespace(addr = server_addr, inb = b"", outb = b"")
