@@ -1,6 +1,9 @@
 # Strength in Numbers
 A client/server application for a replicated chat service. The third design project for CS 262 @ Harvard
 
+``python3 server.py [0, 1, or 2]'' for servers (boot up in order of 0, then 1, then 2
+``python3 client.py'' for clients
+
 ## How to Use
 
 ### Preparation + Launching Server / Client
