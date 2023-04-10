@@ -10,9 +10,8 @@ is_client = True
 
 
 class Client:
-    def __init__(self, p_0=PORT_0, p_1=PORT_1, p_2=PORT_2,
-                 server_addr_0=SERVER_ADDR_0, server_addr_1=SERVER_ADDR_1,
-                 server_addr_2=SERVER_ADDR_2):
+    def __init__(self, p_0=CLIENT_FACING_PORT_0, p_1=CLIENT_FACING_PORT_1, p_2=CLIENT_FACING_PORT_2,
+                 server_addr_0=SERVER_ADDR_0, server_addr_1=SERVER_ADDR_1, server_addr_2=SERVER_ADDR_2):
         self.username = ''
         # server that starts off as leader, 0 by default
         self.leader = 0
@@ -30,10 +29,10 @@ class Client:
                 print(f"Connection refused by server {i}")
 
         self.stop_listening = False  # boolean to tell listener threads when user logs out
-        self.all_dead = False
-        self.has_heartbeat = [True, True, True]
+        self.all_dead = False # boolean indicating whether all servers have gone down
+        self.has_heartbeat = [True, True, True] # array of booleans indicating whether each server has a heartbeat
         h = threading.Thread(target=self.HeartBeat)
-        h.setDaemon(True)
+        h.daemon = True
         h.start()
 
     # this encodes a method call, sends it to the server, and finally decodes and returns
@@ -49,9 +48,9 @@ class Client:
         while data is None:
             if self.all_dead:
                 raise Exception('All Servers are Dead')
+            # try or retry transmission with new leader
             self.sockets[self.leader].sendall(transmission)
             data = self.sockets[self.leader].recv(1024)
-        print('server output: ', data.decode("utf-8"))
         return eval(data.decode("utf-8"))
 
     # Create an account with the given username.
@@ -87,11 +86,11 @@ class Client:
     def SendMessage(self, recipient, message):
         return self.run_service("SendMessage", (self.username, recipient, message))
 
+    # Start a new chat connection along the given socket with the given server
     def InitiateChatConnection(self, sock, server_addr):
         sel = selectors.DefaultSelector()
         # STREAM_CODE is a code for the ChatStream method call on the server
-        transmission = str(
-            (is_client, STREAM_CODE, (self.username,))).encode("utf-8")
+        transmission = str((is_client, STREAM_CODE, (self.username,))).encode("utf-8")
         sock.sendall(transmission)
         # setup selector to listen for read events
         data = types.SimpleNamespace(addr=server_addr, inb=b"", outb=b"")
@@ -101,42 +100,36 @@ class Client:
 
     # Listen for messages from the server.
     def ListenForMessages(self):
-        # connect to all servers
-        sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                   for _ in range(3)]
+        # try to connect with all servers
+        stream_sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(3)]
         for i in range(3):
-            # connect and initiate stream
-            sockets[i].connect((self.server_addresses[i], self.ports[i]))
+            try:
+                stream_sockets[i].connect((self.server_addresses[i], self.ports[i]))
+            except ConnectionRefusedError:
+                pass
         leader = self.leader
-        sel = self.InitiateChatConnection(
-            self.sockets[leader], self.server_addresses[leader])
-        # process events and print messages received
-        while not self.stop_listening and not self.all_dead:
+        sel = self.InitiateChatConnection(stream_sockets[leader], self.server_addresses[leader])
+        # keep listening until either you're told to stop listening because client is logging out or all servers are down
+        while not (self.stop_listening or self.all_dead):
             # when heartbeat thread changes the leader, initiate a new chat connection
             if leader != self.leader:
                 leader = self.leader
-                sel = self.InitiateChatConnection(
-                    self.sockets[leader], self.server_addresses[leader])
+                sel = self.InitiateChatConnection(stream_sockets[leader], self.server_addresses[leader])
             events = sel.select(timeout=None)
             for key, mask in events:
                 # data is none when the event is a new connection
                 if key.data is None:
-                    raise Exception("Shouldn't be accepting connections to socket reserved for listening \
-                                    to messages")
-                data = self.sockets[self.leader].recv(1024)
-                # print("client received this data: ", data)
-                if not data:
-                    break
+                    raise Exception("Shouldn't be accepting connections to socket reserved for listening to messages")
+                data = stream_sockets[self.leader].recv(1024)
+                if not data: break
                 msg = eval(data.decode("utf-8"))
-                print(msg)
                 assert isinstance(msg, SingleMessage)
                 print("\n[" + msg.sender + "]: " + msg.message)
 
     # run the heart beat thread
     def HeartBeat(self):
         # connect to all servers
-        sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                   for _ in range(3)]
+        sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM)for _ in range(3)]
         transmission = str((is_client, HEARTBEAT_CODE, tuple())).encode("utf-8")
         for i in range(3):
             try:
@@ -145,6 +138,8 @@ class Client:
                 sockets[i] = None
                 self.has_heartbeat[i] = False
         while not self.all_dead:
+            # check for heartbeat from all 3 servers if they haven't already gone down
+            # this is indicated by the index in the socket list being set to None
             for i in range(3):
                 if sockets[i]:
                     sockets[i].sendall(transmission)
@@ -153,16 +148,18 @@ class Client:
                     except ConnectionResetError:
                         data = None
                     if not data:
-                        print(f"server {i} has died")
+                        print(f"Server {i} has died")
                         self.has_heartbeat[i] = False
                         sockets[i] = None
+            # if the leader has gone down, select a new leader via carousel i.e. keep checking the next
+            # server in line (with wrap around) for a heartbeat until there's a new leader
             if not self.has_heartbeat[self.leader]:
-                if not any(self.has_heartbeat):
-                    self.all_dead = True
-                else:
+                if any(self.has_heartbeat):
                     i = (self.leader + 1) % 3
                     j = (self.leader + 2) % 3
                     self.leader = i if self.has_heartbeat[i] else j
+                else:
+                    self.all_dead = True
 
     # Print the menu for the client.
     def printMenu(self):
@@ -223,7 +220,7 @@ def run():
                 print("Login successful")
                 # start a thread to listen for messages
                 t = threading.Thread(target=client.ListenForMessages)
-                t.setDaemon(True)
+                t.daemon = True
                 t.start()
             else:
                 print("Login failed. Username might not exist.")
@@ -249,7 +246,6 @@ def run():
 
     # Logout if the user is logged in
     if client.username != '':
-        print("HERE")
         print(client.Logout())
     # stop listening for messages
     client.stop_listening = True

@@ -6,89 +6,77 @@ import re
 from threading import Lock, Thread
 from collections import defaultdict
 from common import *
-import json
 import os
 import time
 
 
-# Non GRPC implementation
 class Server():
-
     # initialize the server with empty users, chats, and online lists
-    def __init__(self, id, server_addr_0=SERVER_ADDR_0, server_addr_1=SERVER_ADDR_1,
-                 server_addr_2=SERVER_ADDR_2, p_0=PORT_0, p_1=PORT_1, p_2=PORT_2,
-                 c_0=CONNECT_PORT_0, c_1=CONNECT_PORT_1, c_2=CONNECT_PORT_2):
+    def __init__(self, id, server_addr_0=SERVER_ADDR_0, server_addr_1=SERVER_ADDR_1, server_addr_2=SERVER_ADDR_2,
+                 cfp_0=CLIENT_FACING_PORT_0, cfp_1=CLIENT_FACING_PORT_1, cfp_2=CLIENT_FACING_PORT_2,
+                 sfp_0=SERVER_FACING_PORT_0, sfp_1=SERVER_FACING_PORT_1, sfp_2=SERVER_FACING_PORT_2):
         self.id = id
         self.addresses = [server_addr_0, server_addr_1, server_addr_2]
-        self.ports = [p_0, p_1, p_2]
-        self.server_connection_ports = [c_0, c_1, c_2]
+
+        self.client_facing_ports = [cfp_0, cfp_1, cfp_2]
+        self.server_facing_ports = [sfp_0, sfp_1, sfp_2]
         self.sel = selectors.DefaultSelector()
-        self.server_facing_sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(2)]
-        self.client_facing_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_facing_sockets = [socket.socket(
+            socket.AF_INET, socket.SOCK_STREAM) for _ in range(2)]
+        self.client_facing_socket = socket.socket(
+            socket.AF_INET, socket.SOCK_STREAM)
+
+        # listen and connect to server facing ports while listening only on client facing ports
         if self.id == 0:
-            self.listen_wrapper([*self.server_facing_sockets, self.client_facing_socket], 
-                                [*self.server_connection_ports[:2], self.ports[self.id]])
+            self.listen_wrapper([*self.server_facing_sockets, self.client_facing_socket],
+                                [*self.server_facing_ports[:2], self.client_facing_ports[self.id]])
         elif self.id == 1:
-            self.listen_wrapper([self.server_facing_sockets[0], self.client_facing_socket], 
-                                [self.server_connection_ports[2], self.ports[self.id]])
-            self.connect_wrapper(self.server_facing_sockets[1:2], self.addresses[0:1], self.server_connection_ports[0:1])
+            self.listen_wrapper([self.server_facing_sockets[0], self.client_facing_socket],
+                                [self.server_facing_ports[2], self.client_facing_ports[self.id]])
+            self.connect_wrapper(
+                self.server_facing_sockets[1:2], self.addresses[0:1], self.server_facing_ports[0:1])
         elif self.id == 2:
-            self.listen_wrapper([self.client_facing_socket], [self.ports[self.id]])
-            self.connect_wrapper(self.server_facing_sockets, self.addresses[:2], self.server_connection_ports[1:])
+            self.listen_wrapper([self.client_facing_socket], [
+                                self.client_facing_ports[self.id]])
+            self.connect_wrapper(self.server_facing_sockets,
+                                 self.addresses[:2], self.server_facing_ports[1:])
         else:
             raise ValueError(f"Invalid Id: {self.id}")
 
-        self.users_lock = Lock() # lock for both self.users and self.online
+        self.users_lock = Lock()  # lock for both self.users and self.online
         self.users = set()
+        self.online = set()
         self.chat_locks = defaultdict(Lock) # locks for each k, v pair in self.chats
         self.chats = defaultdict(list)
-        self.online = set()
+
         self.log_dir = "Server_" + str(self.id) + "_Logs"
         self.users_log = self.log_dir + "/users.txt"
-        self.unsent_messages_log = self.log_dir + "/unsent_messages.json"
+        self.unsent_messages_log_dir = self.log_dir + "/unsent_messages"
 
-        ### CHARLES NEW CODE ###
-        # check if this is an initial bootup or reboot from server failure
-        # do this by checking if folder + logs have been previously made
+
+        # check for existing log files
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
+            os.makedirs(self.unsent_messages_log_dir)
         else:
             # check for existing users and load them
             if os.path.exists(self.users_log):
                 # first get all the users
                 with open(self.users_log, "r") as file:
-                    users_list = []
-                    for line in file:
-                        users_list.append(line.rstrip("\n"))
-                    self.users = set(users_list)
+                    self.users = set(line.rstrip("\n") for line in file)
 
-            # check for existing unsent messages and load them
-            if os.path.exists(self.unsent_messages_log):
-                with open(self.unsent_messages_log, "r") as json_file:
-                    self.chats = defaultdict(list, json.load(json_file))
-
-
-
-        ### CHARLES NEW CODE ###
-        # check if this is an initial bootup or reboot from server failure
-        # do this by checking if folder + logs have been previously written
-        if os.path.exists(self.log_dir):
-            # TODO: call the function that gets server up to date using its log
-            pass
-        else:
-            # make the directory to store the logs
-            os.makedirs(self.log_dir)
-        ### CHARLES NEW CODE ###
-
-    # a wrapper function for connecting a socket
+    # a wrapper function for connecting sockets w/ selector
     def connect_wrapper(self, sockets, addrs, ports):
         for socket, addr, port in zip(sockets, addrs, ports):
-            socket.connect((addr, port))
-            data = types.SimpleNamespace(addr=(addr, port), inb=b"", outb=b"")
-            events = selectors.EVENT_READ | selectors.EVENT_WRITE
-            self.sel.register(socket, events, data=data)
+            try:
+                socket.connect((addr, port))
+                data = types.SimpleNamespace(addr=(addr, port), inb=b"", outb=b"")
+                events = selectors.EVENT_READ | selectors.EVENT_WRITE
+                self.sel.register(socket, events, data=data)
+            except ConnectionRefusedError:
+                print(f"Connection refused on address {addr} and port {port}")
 
-    # a wrapper function for binding and listening to sockets
+    # a wrapper function for binding and listening to sockets w/ selector
     def listen_wrapper(self, sockets, ports):
         for sock, port in zip(sockets, ports):
             sock.bind((self.addresses[self.id], port))
@@ -97,7 +85,7 @@ class Server():
             sock.setblocking(False)
             self.sel.register(sock, selectors.EVENT_READ, data=None)
 
-    # a wrapper function for accepting sockets with some additional configuration
+    # a wrapper function for accepting sockets w/ selector
     def accept_wrapper(self, sock):
         conn, (addr, port) = sock.accept()
         if sock != self.client_facing_socket:
@@ -115,32 +103,40 @@ class Server():
         sock = key.fileobj
         data = key.data
         if mask & selectors.EVENT_READ:
-            recv_data = sock.recv(1024)  # Should be ready to read
+            # retry on initial error since connection may be finnicky
+            try:
+                recv_data = sock.recv(1024)
+            except ConnectionResetError:
+                recv_data = sock.recv(1024)
             if recv_data:
-                # print('server received following: ', recv_data.decode("utf-8"))
                 is_client, method_code, args = eval(recv_data.decode("utf-8"))
+                # if we're receiving a method call from the client, we need to respond
+                # otherwise we mirror the method call but don't respond
                 if is_client:
                     if method_code == STREAM_CODE:
                         # start up the thread and pass the data object, so the thread can write to it
                         t = Thread(target=self.ChatStream, args=(*args, data))
-                        t.setDaemon(True)
+                        t.daemon = True
                         t.start()
                     elif method_code == HEARTBEAT_CODE:
                         data.outb += b'1'
                     else:
                         output = self.run_server_method(method_code, args)
                         data.outb += str(output).encode("utf-8")
-                        # send output to other servers
+                        # forward method calls to other servers since you're the leader
+                        # if you're getting calls from the client
                         invalid = []
                         for server_sock in self.server_facing_sockets:
                             try:
-                                server_sock.sendall(str((False, method_code, args)).encode("utf-8"))
+                                server_sock.sendall(
+                                    str((False, method_code, args)).encode("utf-8"))
                             except OSError:
                                 invalid.append(server_sock)
+                        # remove invalid sockets for other servers that have crashed
                         for server_sock in invalid:
                             self.server_facing_sockets.remove(server_sock)
+                # process a forwarded method call without responding
                 else:
-                    # code for handling other servers sending data
                     self.run_server_method(method_code, args)
             else:
                 print(f"Closing connection to {data.addr}")
@@ -153,7 +149,6 @@ class Server():
 
     # run a method on the server given a code for the method and a tuple of the args to pass in
     def run_server_method(self, method_code, args):
-        print(SERVER_METHODS[method_code], args)
         return getattr(self, SERVER_METHODS[method_code])(*args)
 
     # report failure if account already exists and add user otherwise
@@ -163,16 +158,9 @@ class Server():
             if success:
                 print("adding user: " + user)
                 self.users.add(user)
-
-                ### CHARLES NEW CODE ###
-
-                # log to USERS the new set of users
-                assert os.path.exists(
-                    self.log_dir), "stupid code dumb dumb no directory"
-                with open(self.users_log, "w") as file:
-                    for el in list(self.users):
-                        print(el, file=file)
-                ### CHARLES END NEW CODE ###
+                # add user to log file
+                with open(self.users_log, mode = "a") as file:
+                    print(user, file=file)
         return success
 
     # report failure if account doesn't exist and delete user otherwise
@@ -185,20 +173,15 @@ class Server():
                 self.online.discard(user)
                 with self.chat_locks[user]:
                     if user in self.chats:
-                        del self.chats[user] # delete undelivered chats if you are deleting the account
+                        # delete undelivered chats if you are deleting the account
+                        del self.chats[user]
                 del self.chat_locks[user]
-
-                ### CHARLES NEW CODE ###
-
-                # log to USERS that we've deleted this user
+                # update user log to exclude the deleted account
                 with open(self.users_log, "w") as file:
                     for el in list(self.users):
                         print(el, file=file)
-
-                ### END CHARLES NEW CODE ###
-
         return success
-    
+
     # report failure if account doesn't exist and return list of accounts that match wildcard otherwise
     def ListAccounts(self, accountWildcard):
         # search in users for accounts that match wildcard
@@ -214,6 +197,14 @@ class Server():
         with self.users_lock:
             self.online.add(user)
             success = user in self.users
+        if success:
+            # try loading in unsent message log
+            filepath = self.unsent_messages_log_dir + '/' + user + '.txt'
+            if os.path.exists(filepath):
+                with open(filepath, "r") as f:
+                    with self.chat_locks[user]:
+                        self.chats[user] = [eval(line.rstrip("\n")) for line in f]
+                os.remove(filepath)
         return success
 
     # report failure if account doesn't exist and remove user from online list otherwise
@@ -236,19 +227,15 @@ class Server():
             message = SingleMessage(sender, message)
             with self.chat_locks[recipient]:
                 self.chats[recipient].append(message)
-        
-            # CHARLES NEW CODE
-            with open(self.unsent_messages_log, "w") as json_file:
-                json.dump(self.chats, json_file)
-            # END CHARLES NEW CODE
-
+            with self.users_lock:
+                # if the user is offline, then write the message to the log for persistence
+                if recipient not in self.online:
+                    with open(self.unsent_messages_log_dir + "/" + recipient + ".txt", mode="a") as f:
+                        f.write(str(message) + '\n')
             return True
-
-
 
     # report failure if account doesn't exist and start chat stream otherwise
     def ChatStream(self, user, data_stream):
-        print(f"started chat stream for {user}")
         # always make sure to release this; note that this needs to intermittently release
         self.users_lock.acquire(blocking=True)
         while user in self.online:
@@ -257,15 +244,10 @@ class Server():
             self.users_lock.release()
             with self.chat_locks[user]:
                 if self.chats[user]:
-                    print("sending message to " + user)
                     msg = self.chats[user].pop(0)
                     data_stream.outb += str(msg).encode("utf-8")
-
-                    # CHARLES NEW CODE
-                    with open(self.unsent_messages_log, "w") as json_file:
-                        json.dump(self.chats, json_file)
-                    # END CHARLES NEW CODE
-
+            # wait slightly to avoid sending two messages in same outbound message
+            time.sleep(0.01)
             # reacquire lock before checking while condition
             self.users_lock.acquire(blocking=True)
         # release lock before stopping stream
@@ -281,6 +263,7 @@ def serve(id):
                 server.accept_wrapper(key.fileobj)
             else:
                 server.service_connection(key, mask)
+
 
 # run the server when this script is executed
 if __name__ == '__main__':
