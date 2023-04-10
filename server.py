@@ -7,6 +7,7 @@ from threading import Lock, Thread
 from collections import defaultdict
 from common import *
 import os
+import time
 
 
 # Non GRPC implementation
@@ -92,19 +93,28 @@ class Server():
         if mask & selectors.EVENT_READ:
             recv_data = sock.recv(1024)  # Should be ready to read
             if recv_data:
-                print('server received following: ', recv_data.decode("utf-8"))
+                # print('server received following: ', recv_data.decode("utf-8"))
                 is_client, method_code, args = eval(recv_data.decode("utf-8"))
                 if is_client:
-                    if method_code != STREAM_CODE:
+                    if method_code == STREAM_CODE:
+                        # start up the thread and pass the data object, so the thread can write to it
+                        t = Thread(target=self.ChatStream, args=(*args, data))
+                        t.setDaemon(True)
+                        t.start()
+                    elif method_code == HEARTBEAT_CODE:
+                        data.outb += b'1'
+                    else:
                         output = self.run_server_method(method_code, args)
                         data.outb += str(output).encode("utf-8")
                         # send output to other servers
+                        invalid = []
                         for server_sock in self.server_facing_sockets:
-                            server_sock.sendall(str((False, method_code, args)).encode("utf-8"))
-                    else:
-                        # start up the thread and pass the data object, so the thread can write to it
-                        t = Thread(target=self.ChatStream, args=(*args, data))
-                        t.start()
+                            try:
+                                server_sock.sendall(str((False, method_code, args)).encode("utf-8"))
+                            except OSError:
+                                invalid.append(server_sock)
+                        for server_sock in invalid:
+                            self.server_facing_sockets.remove(server_sock)
                 else:
                     # code for handling other servers sending data
                     self.run_server_method(method_code, args)

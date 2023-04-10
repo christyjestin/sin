@@ -18,3 +18,5 @@ SingleMessage = namedtuple("SingleMessage", ["sender", "message"])
 # methods that will be exposed to the client; our analog to services
 SERVER_METHODS = ['CreateAccount', 'ListAccounts', 'DeleteAccount', 'Login', 'Logout', 'SendMessage', 'ChatStream']
 STREAM_CODE = SERVER_METHODS.index('ChatStream')
+
+HEARTBEAT_CODE = 77
