@@ -21,12 +21,13 @@ class Client:
         for i in range(3):
             # connect and initiate stream
             self.sockets[i].connect((self.server_addresses[i], self.ports[i]))
+            print(f"Connected to server {i} at {self.server_addresses[i], self.ports[i]}")
 
         self.stop_listening = False  # boolean to tell listener threads when user logs out
         self.all_dead = False
         self.has_heartbeat = [False, False, False]
-        h = threading.Thread(target=self.HeartBeat)
-        h.start()
+        # h = threading.Thread(target=self.HeartBeat)
+        # h.start()
 
     # this encodes a method call, sends it to the server, and finally decodes and returns
     # the server's response. Takes in a method name and the args to be passed to the method
@@ -43,6 +44,7 @@ class Client:
                 raise Exception('All Servers are Dead')
             self.sockets[self.leader].sendall(transmission)
             data = self.sockets[self.leader].recv(1024)
+        print('server output: ', data.decode("utf-8"))
         return eval(data.decode("utf-8"))
 
     # Create an account with the given username.
@@ -124,6 +126,7 @@ class Client:
         for i in range(3):
             sockets[i].connect((self.server_addresses[i], self.ports[i]))
             # TODO: ask for heartbeat - (send msg specifying this is heartbeat request)
+
         while not self.all_dead:
             for i in range(3):
                 data = sockets[i].recv(1)

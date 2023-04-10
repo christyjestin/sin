@@ -6,6 +6,7 @@ import re
 from threading import Lock, Thread
 from collections import defaultdict
 from common import *
+import os
 
 
 # Non GRPC implementation
@@ -13,47 +14,75 @@ class Server():
 
     # initialize the server with empty users, chats, and online lists
     def __init__(self, id, server_addr_0=SERVER_ADDR_0, server_addr_1=SERVER_ADDR_1,
-                 server_addr_2=SERVER_ADDR_2, p_0=PORT_0, p_1=PORT_1, p_2=PORT_2):
+                 server_addr_2=SERVER_ADDR_2, p_0=PORT_0, p_1=PORT_1, p_2=PORT_2,
+                 c_0=CONNECT_PORT_0, c_1=CONNECT_PORT_1, c_2=CONNECT_PORT_2):
         self.id = id
         self.addresses = [server_addr_0, server_addr_1, server_addr_2]
         self.ports = [p_0, p_1, p_2]
-        self.server_sockets = []
-        # connect to lower ranked servers only
-        for i in range(self.id):
-            self.server_sockets.append(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
-            self.server_sockets[i].connect((self.addresses[i], self.ports[i]))
-
-        # create socket for itself
-        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        lsock.bind((self.addresses[self.id], self.ports[self.id]))
-        lsock.listen()
-        print(
-            f"Listening on {(self.addresses[self.id], self.ports[self.id])}")
-        lsock.setblocking(False)
+        self.server_connection_ports = [c_0, c_1, c_2]
         self.sel = selectors.DefaultSelector()
-        self.sel.register(lsock, selectors.EVENT_READ, data=None)
+        self.server_facing_sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(2)]
+        self.client_facing_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if self.id == 0:
+            self.listen_wrapper([*self.server_facing_sockets, self.client_facing_socket], 
+                                [*self.server_connection_ports[:2], self.ports[self.id]])
+        elif self.id == 1:
+            self.listen_wrapper([self.server_facing_sockets[0], self.client_facing_socket], 
+                                [self.server_connection_ports[2], self.ports[self.id]])
+            self.connect_wrapper(self.server_facing_sockets[1], self.addresses[0], self.server_connection_ports[0])
+        elif self.id == 2:
+            self.listen_wrapper([self.client_facing_socket], [self.ports[self.id]])
+            self.connect_wrapper(self.server_facing_sockets[0], self.addresses[0], self.server_connection_ports[1])
+            self.connect_wrapper(self.server_facing_sockets[1], self.addresses[1], self.server_connection_ports[2])
+        else:
+            raise ValueError(f"Invalid Id: {self.id}")
 
-        # only remember the addresses and ports of other servers
-        self.addresses.pop(self.id)
-        self.ports.pop(self.id)
-
-        self.server_keys = []
         self.users_lock = Lock() # lock for both self.users and self.online
         self.users = set()
         self.chat_locks = defaultdict(Lock) # locks for each k, v pair in self.chats
         self.chats = defaultdict(list)
         self.online = set()
+        self.log_dir = "Server_" + str(self.id) + "_Logs"
+
+
+        ### CHARLES NEW CODE ###
+        # check if this is an initial bootup or reboot from server failure
+        # do this by checking if folder + logs have been previously written
+        if os.path.exists(self.log_dir):
+            # TODO: call the function that gets server up to date using its log
+            pass
+        else:
+            # make the directory to store the logs
+            os.makedirs(self.log_dir)
+        ### CHARLES NEW CODE ###
+
+    # a wrapper function for connecting
+    def connect_wrapper(self, socket, addr, port):
+        socket.connect((addr, port))
+        data = types.SimpleNamespace(addr=(addr, port), inb=b"", outb=b"")
+        events = selectors.EVENT_READ | selectors.EVENT_WRITE
+        self.sel.register(socket, events, data=data)
+
+    # a wrapper function for binding and listening to sockets
+    def listen_wrapper(self, sockets, ports):
+        for sock, port in zip(sockets, ports):
+            sock.bind((self.addresses[self.id], port))
+            sock.listen()
+            print(f"Listening on {(self.addresses[self.id], port)}")
+            sock.setblocking(False)
+            self.sel.register(sock, selectors.EVENT_READ, data=None)
 
     # a wrapper function for accepting sockets with some additional configuration
     def accept_wrapper(self, sock):
-        conn, addr = sock.accept()
-        print(f"Accepted connection from {addr}")
+        conn, (addr, port) = sock.accept()
+        if sock != self.client_facing_socket:
+            repl = self.server_facing_sockets.index(sock)
+            self.server_facing_sockets[repl] = conn
+        print(f"Accepted connection from {addr, port}")
         conn.setblocking(False)
-        data = types.SimpleNamespace(addr=addr, inb=b"", outb=b"")
+        data = types.SimpleNamespace(addr=(addr, port), inb=b"", outb=b"")
         events = selectors.EVENT_READ | selectors.EVENT_WRITE
-        key = self.sel.register(conn, events, data=data)
-        if addr in self.addresses:
-            self.server_keys.append(key)
+        self.sel.register(conn, events, data=data)
 
     # service a socket that is connected: handle inbound and outbound data
     # while running any necessary chat server methods
@@ -63,14 +92,15 @@ class Server():
         if mask & selectors.EVENT_READ:
             recv_data = sock.recv(1024)  # Should be ready to read
             if recv_data:
+                print('server received following: ', recv_data.decode("utf-8"))
                 is_client, method_code, args = eval(recv_data.decode("utf-8"))
                 if is_client:
                     if method_code != STREAM_CODE:
                         output = self.run_server_method(method_code, args)
                         data.outb += str(output).encode("utf-8")
                         # send output to other servers
-                        for server_key in self.server_keys:
-                            server_key.data.outb += recv_data
+                        for server_sock in self.server_facing_sockets:
+                            server_sock.sendall(str((False, method_code, args)).encode("utf-8"))
                     else:
                         # start up the thread and pass the data object, so the thread can write to it
                         t = Thread(target=self.ChatStream, args=(*args, data))
@@ -84,12 +114,12 @@ class Server():
                 sock.close()
         if mask & selectors.EVENT_WRITE and data.outb:
             # handle outbound data
-            print(self.users)
             sock.sendall(data.outb)
             data.outb = b''
 
     # run a method on the server given a code for the method and a tuple of the args to pass in
     def run_server_method(self, method_code, args):
+        print(SERVER_METHODS[method_code], args)
         return getattr(self, SERVER_METHODS[method_code])(*args)
 
     # report failure if account already exists and add user otherwise
@@ -99,6 +129,12 @@ class Server():
             if success:
                 print("adding user: " + user)
                 self.users.add(user)
+
+                ### CHARLES NEW CODE ###
+
+                # log to USERS that a new user has been created
+                # assert os.path.exists(self.)
+                ### CHARLES END NEW CODE ###
         return success
 
     # report failure if account doesn't exist and delete user otherwise
@@ -187,4 +223,4 @@ def serve(id):
 # run the server when this script is executed
 if __name__ == '__main__':
     assert len(sys.argv) == 2, "provide server id"
-    serve(sys.argv[1])
+    serve(int(sys.argv[1]))
