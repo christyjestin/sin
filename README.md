@@ -2,6 +2,9 @@
 
 ## A client/server application for a replicated chat service (3rd design project for CS 262 @ Harvard)
 
+### By Ashlan Ahmed, Charles Ma, and Christy Jestin
+### Extended from an unreplicated chat server written by Rakesh Nori, Soham Bose, and Christy Jestin
+
 Please run:
 
 -   `python3 server.py [0, 1, or 2]` for servers (boot up in order of 0, then 1, then 2)
